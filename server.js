@@ -3,13 +3,14 @@ const https = require('https');
 const app = express();
 
 app.use(express.json());
+app.use(express.text());
 app.use(express.urlencoded({ extended: true }));
 
-// CORS — autorise ton app PWA
+// CORS
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Token, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Token, x-token');
   if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
   next();
 });
@@ -19,47 +20,68 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Podcastr — Ecole Directe Proxy' });
 });
 
-// Proxy générique vers api.ecoledirecte.com
+// Proxy vers api.ecoledirecte.com
 app.all('/ed/*', (req, res) => {
-  const path = req.params[0];
-  const query = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  const fullPath = '/v3/' + path + query;
+  // Reconstruit le chemin : /ed/login.awp?v=4 → /v3/login.awp?v=4
+  const afterEd = req.url.replace(/^\/ed\//, '');
+  const fullPath = '/v3/' + afterEd;
 
-  let body = '';
+  // Construit le body au format attendu par Ecole Directe
+  // L'API attend : data=<JSON encodé en URL>
+  let bodyToSend = '';
   if (req.method === 'POST') {
-    // Reconstruit le body
-    if (req.body && typeof req.body === 'object') {
-      const data = req.body.data || JSON.stringify(req.body);
-      body = `data=${encodeURIComponent(typeof data === 'string' ? data : JSON.stringify(data))}`;
+    if (typeof req.body === 'object' && req.body !== null && Object.keys(req.body).length > 0) {
+      // Body JSON envoyé par l'app → on le réemballe
+      const dataObj = req.body.data !== undefined ? req.body.data : req.body;
+      const dataStr = typeof dataObj === 'string' ? dataObj : JSON.stringify(dataObj);
+      bodyToSend = 'data=' + encodeURIComponent(dataStr);
+    } else if (typeof req.body === 'string' && req.body.length > 0) {
+      bodyToSend = req.body;
+    } else {
+      // Body vide → Ecole Directe attend quand même data={}
+      bodyToSend = 'data=' + encodeURIComponent('{}');
     }
   }
+
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'User-Agent': 'ecoledirecte/3.17 (iPhone)',
+    'Host': 'api.ecoledirecte.com',
+  };
+
+  if (req.headers['x-token']) headers['X-Token'] = req.headers['x-token'];
+  if (bodyToSend) headers['Content-Length'] = Buffer.byteLength(bodyToSend);
 
   const options = {
     hostname: 'api.ecoledirecte.com',
     path: fullPath,
     method: req.method,
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'Mozilla/5.0',
-    }
+    headers
   };
 
-  // Passe le token si présent
-  if (req.headers['x-token']) options.headers['X-Token'] = req.headers['x-token'];
-  if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
+  console.log(`→ ${req.method} https://api.ecoledirecte.com${fullPath}`);
+  console.log(`  body: ${bodyToSend.substring(0, 120)}`);
 
   const proxyReq = https.request(options, (proxyRes) => {
-    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.statusCode = proxyRes.statusCode;
-    proxyRes.pipe(res);
+
+    let data = '';
+    proxyRes.setEncoding('utf8');
+    proxyRes.on('data', chunk => data += chunk);
+    proxyRes.on('end', () => {
+      console.log(`← ${proxyRes.statusCode} (${data.length} chars)`);
+      res.end(data);
+    });
   });
 
   proxyReq.on('error', (e) => {
+    console.error('Proxy error:', e.message);
     res.status(500).json({ error: e.message });
   });
 
-  if (body) proxyReq.write(body);
+  if (bodyToSend) proxyReq.write(bodyToSend);
   proxyReq.end();
 });
 
