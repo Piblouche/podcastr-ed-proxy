@@ -1,0 +1,1 @@
+{\n  "name": "podcastr-ed-proxy",\n  "version": "1.0.0",\n  "description": "Proxy Ecole Directe pour Podcastr PWA",\n  "main": "server.js",\n  "scripts": {\n    "start": "node server.js"\n  },\n  "engines": {\n    "node": ">=18"\n  },\n  "dependencies": {\n    "express": "^4.18.2"\n  }\n}
